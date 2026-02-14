@@ -1,0 +1,11 @@
+{
+  "name": "haxe-gamepush-kit",
+  "url": "https://example.local/haxe-gamepush-kit",
+  "license": "MIT",
+  "tags": ["heaps", "gamepush", "bridge"],
+  "description": "Reusable GamePush integration kit for Haxe/Heaps projects",
+  "version": "0.1.0",
+  "classPath": "src",
+  "releasenote": "Initial local module extraction",
+  "contributors": ["konstantin"]
+}
