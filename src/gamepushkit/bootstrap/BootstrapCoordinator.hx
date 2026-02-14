@@ -3,6 +3,7 @@ package gamepushkit.bootstrap;
 import gamepush.AdManager;
 import gamepushkit.bootstrap.BootstrapTypes.BootstrapProgress;
 import gamepushkit.bootstrap.BootstrapTypes.BootstrapSnapshot;
+import StringTools;
 
 /**
  * Coordinates the startup bootstrap sequence before React menu becomes interactive.
@@ -32,6 +33,7 @@ class BootstrapCoordinator {
 	public var saveProvider(default, null):SaveProvider;
 	public var currentLanguage(default, null):String = "en";
 	public var leaderboardWarmup(default, null):Null<Array<Dynamic>> = null;
+	public var leaderboardWarmupVariant(default, null):Null<String> = null;
 
 	public function new(adManager:AdManager, saveDefaults:Dynamic, saveFields:Array<String>) {
 		this.adManager = adManager;
@@ -113,6 +115,10 @@ class BootstrapCoordinator {
 		return leaderboardWarmup;
 	}
 
+	public function getLeaderboardWarmupVariant():Null<String> {
+		return leaderboardWarmupVariant;
+	}
+
 	function warmupLeaderboard(leaderboardAvailable:Bool, onComplete:Array<Dynamic>->Void):Void {
 		if (!leaderboardAvailable || !shouldWarmupLeaderboard()) {
 			onComplete(null);
@@ -140,18 +146,42 @@ class BootstrapCoordinator {
 				return;
 			}
 
-			var fetchPromise:Dynamic = untyped leaderboard.fetch({
-				tag: LEADERBOARD_TAG,
-				limit: LEADERBOARD_LIMIT
-			});
-			var fetchChain:Dynamic = untyped fetchPromise.then(function(result:Dynamic):Dynamic {
-				var players:Array<Dynamic> = null;
-				if (result != null && Reflect.hasField(result, "players")) {
-					players = cast Reflect.field(result, "players");
-				}
-				finish(players);
-				return null;
-			});
+				var fetchPromise:Dynamic = untyped leaderboard.fetch({
+					tag: LEADERBOARD_TAG,
+					limit: LEADERBOARD_LIMIT
+				});
+				var fetchChain:Dynamic = untyped fetchPromise.then(function(result:Dynamic):Dynamic {
+					leaderboardWarmupVariant = null;
+					if (result != null) {
+						var directVariant:Dynamic = Reflect.field(result, "variant");
+						if (Std.isOfType(directVariant, String)) {
+							var directVariantString = StringTools.trim(cast directVariant);
+							if (directVariantString != "")
+								leaderboardWarmupVariant = directVariantString;
+						}
+
+						if (leaderboardWarmupVariant == null) {
+							var leaderboardMeta:Dynamic = Reflect.field(result, "leaderboard");
+							if (leaderboardMeta != null) {
+								var metaVariant:Dynamic = Reflect.field(leaderboardMeta, "variant");
+								if (!Std.isOfType(metaVariant, String))
+									metaVariant = Reflect.field(leaderboardMeta, "defaultVariant");
+								if (Std.isOfType(metaVariant, String)) {
+									var metaVariantString = StringTools.trim(cast metaVariant);
+									if (metaVariantString != "")
+										leaderboardWarmupVariant = metaVariantString;
+								}
+							}
+						}
+					}
+
+					var players:Array<Dynamic> = null;
+					if (result != null && Reflect.hasField(result, "players")) {
+						players = cast Reflect.field(result, "players");
+					}
+					finish(players);
+					return null;
+				});
 
 			var fetchCatch:Dynamic = Reflect.field(fetchChain, "catch");
 			if (fetchCatch != null) {

@@ -11,6 +11,8 @@ import gamepushkit.bootstrap.BootstrapTypes.BootstrapProgress;
 import gamepushkit.bootstrap.BootstrapTypes.BootstrapSnapshot;
 import gamepushkit.bootstrap.LanguageResolver;
 import gamepushkit.bootstrap.SaveProvider;
+import haxe.ds.StringMap;
+import StringTools;
 
 /**
  * GamePush Samples - Backend API.
@@ -37,10 +39,16 @@ class GamePushSampleBackend implements IGame {
 	var bootstrapSnapshot:BootstrapSnapshot;
 	var saveProvider:Null<SaveProvider> = null;
 	var currentLanguage:String = "en";
+	var leaderboardFetchCache:StringMap<Dynamic> = new StringMap<Dynamic>();
+	var leaderboardVariantByTag:StringMap<String> = new StringMap<String>();
 
 	static inline var AD_PAUSE_TOKEN:String = "ads-blocking";
 	static inline var PLATFORM_PAUSE_TOKEN:String = "platform-visibility";
 	static final SAVE_FIELDS:Array<String> = ["score"];
+	static inline var LEADERBOARD_CACHE_TTL_MS:Int = 60000;
+	static inline var LEADERBOARD_DEFAULT_TAG:String = "main";
+	static inline var LEADERBOARD_DEFAULT_LIMIT:Int = 10;
+	static inline var LEADERBOARD_DEFAULT_VARIANT:String = "global";
 	// Split API switches:
 	// - Data API (player/login/provider writes)
 	// - Leaderboard API (open/fetch/submit from UI sample)
@@ -83,6 +91,14 @@ class GamePushSampleBackend implements IGame {
 			bootstrapSnapshot = snapshot;
 			saveProvider = bootstrapCoordinator != null ? bootstrapCoordinator.saveProvider : null;
 			currentLanguage = snapshot.language;
+			seedLeaderboardCache(snapshot);
+			if (bootstrapCoordinator != null) {
+				var warmupVariant = bootstrapCoordinator.getLeaderboardWarmupVariant();
+				if (warmupVariant != null && StringTools.trim(warmupVariant) != "") {
+					leaderboardVariantByTag.set(LEADERBOARD_DEFAULT_TAG, StringTools.trim(warmupVariant));
+				}
+			}
+			syncProviderLanguageOnStartup();
 
 			// Yandex Games 1.19: lifecycle starts only when session is genuinely ready for interaction.
 			startGamePushLifecycle();
@@ -317,6 +333,128 @@ class GamePushSampleBackend implements IGame {
 		return null;
 	}
 
+	function normalizeLeaderboardTag(tag:String):String {
+		if (tag == null)
+			return LEADERBOARD_DEFAULT_TAG;
+		var trimmed = StringTools.trim(tag);
+		return trimmed != "" ? trimmed : LEADERBOARD_DEFAULT_TAG;
+	}
+
+	function leaderboardCacheKey(tag:String, limit:Int):String {
+		var safeTag = normalizeLeaderboardTag(tag);
+		var safeLimit = limit > 0 ? limit : LEADERBOARD_DEFAULT_LIMIT;
+		return safeTag + "|" + Std.string(safeLimit);
+	}
+
+	function cloneLeaderboardEntries(entries:Array<Dynamic>):Array<Dynamic> {
+		var copy:Array<Dynamic> = [];
+		if (entries == null)
+			return copy;
+		for (entry in entries) {
+			copy.push(entry);
+		}
+		return copy;
+	}
+
+	function cacheLeaderboardEntries(tag:String, limit:Int, entries:Array<Dynamic>, ?source:String = "fetch"):Void {
+		if (entries == null)
+			return;
+
+		leaderboardFetchCache.set(leaderboardCacheKey(tag, limit), {
+			fetchedAt: Date.now().getTime(),
+			source: source,
+			entries: cloneLeaderboardEntries(entries)
+		});
+	}
+
+	function getCachedLeaderboardRecord(tag:String, limit:Int):Dynamic {
+		var key = leaderboardCacheKey(tag, limit);
+		var cached = leaderboardFetchCache.get(key);
+		if (cached == null)
+			return null;
+
+		var fetchedAt:Float = Reflect.field(cached, "fetchedAt");
+		if (Date.now().getTime() - fetchedAt > LEADERBOARD_CACHE_TTL_MS) {
+			leaderboardFetchCache.remove(key);
+			return null;
+		}
+		return cached;
+	}
+
+	function getCachedLeaderboardEntries(tag:String, limit:Int):Null<Array<Dynamic>> {
+		var cached = getCachedLeaderboardRecord(tag, limit);
+		if (cached == null)
+			return null;
+
+		var entries:Array<Dynamic> = cast Reflect.field(cached, "entries");
+		if (entries == null)
+			return null;
+
+		return cloneLeaderboardEntries(entries);
+	}
+
+	function invalidateLeaderboardCache(?tag:String):Void {
+		if (tag == null || tag == "") {
+			leaderboardFetchCache = new StringMap<Dynamic>();
+			return;
+		}
+
+		for (key in leaderboardFetchCache.keys()) {
+			var parts = key.split("|");
+			if (parts.length > 0 && parts[0] == tag) {
+				leaderboardFetchCache.remove(key);
+			}
+		}
+	}
+
+	function seedLeaderboardCache(snapshot:BootstrapSnapshot):Void {
+		if (snapshot == null || snapshot.leaderboardWarmup == null)
+			return;
+
+		var warmup:Array<Dynamic> = cast snapshot.leaderboardWarmup;
+		if (warmup == null || warmup.length == 0)
+			return;
+
+		cacheLeaderboardEntries(LEADERBOARD_DEFAULT_TAG, LEADERBOARD_DEFAULT_LIMIT, warmup, "warmup");
+	}
+
+	function normalizeVariant(value:Dynamic):Null<String> {
+		if (value == null)
+			return null;
+		if (!Std.isOfType(value, String))
+			return null;
+		var variant = StringTools.trim(cast value);
+		return variant != "" ? variant : null;
+	}
+
+	function rememberLeaderboardVariant(tag:String, fetchResult:Dynamic):Void {
+		var safeTag = normalizeLeaderboardTag(tag);
+		var variant = normalizeVariant(Reflect.field(fetchResult, "variant"));
+		if (variant == null) {
+			var leaderboardMeta:Dynamic = Reflect.field(fetchResult, "leaderboard");
+			if (leaderboardMeta != null) {
+				variant = normalizeVariant(Reflect.field(leaderboardMeta, "variant"));
+				if (variant == null)
+					variant = normalizeVariant(Reflect.field(leaderboardMeta, "defaultVariant"));
+			}
+		}
+
+		if (variant != null) {
+			leaderboardVariantByTag.set(safeTag, variant);
+		}
+	}
+
+	function resolveLeaderboardVariant(tag:String):String {
+		var safeTag = normalizeLeaderboardTag(tag);
+		var known = leaderboardVariantByTag.get(safeTag);
+		if (known != null) {
+			var trimmed = StringTools.trim(known);
+			if (trimmed != "")
+				return trimmed;
+		}
+		return LEADERBOARD_DEFAULT_VARIANT;
+	}
+
 	// ========== Ads API ==========
 
 	function withBlockingAd(showAd:(Void->Void)->Void, onComplete:Dynamic, adLabel:String):Void {
@@ -466,6 +604,7 @@ class GamePushSampleBackend implements IGame {
 			provider.set("score", score);
 		}
 		updateSnapshotSave("score", score);
+		invalidateLeaderboardCache();
 
 		#if gamepush
 		if (!GAMEPUSH_DATA_API_CALLS_ENABLED)
@@ -531,7 +670,62 @@ class GamePushSampleBackend implements IGame {
 			return;
 		if (!isLeaderboardAvailable())
 			return;
-		untyped __js__("window.gamePushSDK.leaderboard.open({tag: {0}})", tag);
+		var safeTag = normalizeLeaderboardTag(tag);
+		var opened = false;
+		var openOnce = function():Void {
+			if (opened)
+				return;
+			opened = true;
+			untyped __js__("window.gamePushSDK.leaderboard.open({tag: {0}})", safeTag);
+		};
+
+		if (GAMEPUSH_LANGUAGE_API_CALLS_ENABLED && isGamePushAvailable()) {
+			try {
+				var targetLanguage = currentLanguage;
+					var syncPromise:Dynamic = untyped __js__("
+						(function(targetLang) {
+							var sdk = window.gamePushSDK;
+							if (!sdk || typeof sdk.changeLanguage !== 'function') return Promise.resolve();
+							var callChange = function(lang) {
+								try {
+									var result = sdk.changeLanguage(lang);
+								if (result && typeof result.then === 'function') return result;
+								return Promise.resolve(result);
+							} catch (err) {
+								return Promise.reject(err);
+							}
+						};
+							var fallbackLang = targetLang === 'en' ? 'ru' : 'en';
+							return callChange(fallbackLang)
+								.catch(function() { return null; })
+								.then(function() { return callChange(targetLang); });
+						})({0})
+					", targetLanguage);
+				var syncThen:Dynamic = syncPromise != null ? Reflect.field(syncPromise, "then") : null;
+				if (syncThen != null) {
+					Reflect.callMethod(syncPromise, syncThen, [function(_):Dynamic {
+						haxe.Timer.delay(function() {
+							openOnce();
+						}, 50);
+						return null;
+					}]);
+
+					var syncCatch:Dynamic = Reflect.field(syncPromise, "catch");
+					if (syncCatch != null) {
+						Reflect.callMethod(syncPromise, syncCatch, [function(err:Dynamic):Dynamic {
+							untyped __js__("console.warn('Failed to force language before leaderboard open:', {0})", err);
+							openOnce();
+							return null;
+						}]);
+					}
+					return;
+				}
+			} catch (e) {
+				trace('[Game] Failed to force language before leaderboard open: $e');
+			}
+		}
+
+		openOnce();
 		#end
 	}
 
@@ -542,19 +736,125 @@ class GamePushSampleBackend implements IGame {
 				onResult([]);
 			return;
 		}
+
+		var cacheRecord = getCachedLeaderboardRecord(tag, limit);
+		var cached = cacheRecord != null ? cast Reflect.field(cacheRecord, "entries") : null;
+
 		if (!isLeaderboardAvailable()) {
 			if (onResult != null)
-				onResult([]);
+				onResult(cached != null ? cloneLeaderboardEntries(cached) : []);
 			return;
 		}
-		untyped __js__("
-			window.gamePushSDK.leaderboard.fetch({tag: {0}, limit: {1}})
-				.then(function(result) { if ({2}) {2}(result.players); })
-				.catch(function(err) { console.error('Leaderboard fetch error:', err); if ({2}) {2}([]); });
-		", tag, limit, onResult);
+
+		try {
+			var fetchPromise:Dynamic = untyped __js__("window.gamePushSDK.leaderboard.fetch({tag: {0}, limit: {1}})", tag, limit);
+			var fetchChain:Dynamic = untyped fetchPromise.then(function(result:Dynamic):Dynamic {
+				rememberLeaderboardVariant(tag, result);
+				var players:Array<Dynamic> = [];
+				if (result != null && Reflect.hasField(result, "players")) {
+					players = cast Reflect.field(result, "players");
+				}
+				cacheLeaderboardEntries(tag, limit, players);
+				if (onResult != null)
+					onResult(players);
+				return null;
+			});
+
+			var fetchCatch:Dynamic = Reflect.field(fetchChain, "catch");
+			if (fetchCatch != null) {
+				Reflect.callMethod(fetchChain, fetchCatch, [function(err:Dynamic):Dynamic {
+					untyped __js__("console.error('Leaderboard fetch error:', {0})", err);
+					if (onResult != null)
+						onResult(cached != null ? cloneLeaderboardEntries(cached) : []);
+					return null;
+				}]);
+			}
+
+		} catch (err) {
+			if (onResult != null)
+				onResult(cached != null ? cloneLeaderboardEntries(cached) : []);
+		}
 		#else
 		if (onResult != null)
-			onResult([]);
+				onResult([]);
+		#end
+	}
+
+	function publishScoreToLeaderboard(tag:String, score:Int, onComplete:Bool->Void):Void {
+		#if gamepush
+		if (!GAMEPUSH_LEADERBOARD_API_CALLS_ENABLED || !isLeaderboardAvailable()) {
+			if (onComplete != null)
+				onComplete(false);
+			return;
+		}
+
+		var resolvedTag = normalizeLeaderboardTag(tag);
+
+			var publishWithKnownVariant:Void->Void = null;
+			publishWithKnownVariant = function():Void {
+				var resolvedVariant = resolveLeaderboardVariant(resolvedTag);
+
+				try {
+					var payload:Dynamic = {
+						tag: resolvedTag,
+						variant: resolvedVariant,
+						record: {score: score}
+					};
+					var publishPromise:Dynamic = untyped __js__("window.gamePushSDK.leaderboard.publishRecord({0})", payload);
+					var publishChain:Dynamic = untyped publishPromise.then(function(_):Dynamic {
+						invalidateLeaderboardCache(resolvedTag);
+						if (onComplete != null)
+							onComplete(true);
+						return null;
+					});
+
+					var publishCatch:Dynamic = Reflect.field(publishChain, "catch");
+					if (publishCatch != null) {
+						Reflect.callMethod(publishChain, publishCatch, [function(err:Dynamic):Dynamic {
+							untyped __js__("console.warn('Leaderboard publish unavailable for current config:', {0}, {1}, {2})", resolvedTag, resolvedVariant, err);
+							if (onComplete != null)
+								onComplete(false);
+							return null;
+						}]);
+					}
+				} catch (err) {
+					untyped __js__("console.warn('Leaderboard publish exception:', {0}, {1}, {2})", resolvedTag, resolvedVariant, err);
+					if (onComplete != null)
+						onComplete(false);
+				}
+		};
+
+		var knownVariant = resolveLeaderboardVariant(resolvedTag);
+		if (knownVariant != LEADERBOARD_DEFAULT_VARIANT) {
+			publishWithKnownVariant();
+			return;
+		}
+
+		try {
+			var fetchPromise:Dynamic = untyped __js__("window.gamePushSDK.leaderboard.fetch({tag: {0}, limit: 1})", resolvedTag);
+			var fetchChain:Dynamic = untyped fetchPromise.then(function(result:Dynamic):Dynamic {
+				rememberLeaderboardVariant(resolvedTag, result);
+				publishWithKnownVariant();
+				return null;
+			});
+
+			var fetchCatch:Dynamic = Reflect.field(fetchChain, "catch");
+			if (fetchCatch != null) {
+				Reflect.callMethod(fetchChain, fetchCatch, [function(err:Dynamic):Dynamic {
+					untyped __js__("console.warn('Leaderboard variant fetch failed, publishing with fallback variant:', {0}, {1})", resolvedTag, err);
+					publishWithKnownVariant();
+					return null;
+				}]);
+			}
+			return;
+		} catch (err) {
+			untyped __js__("console.warn('Leaderboard variant fetch exception, publishing with fallback variant:', {0}, {1})", resolvedTag, err);
+		}
+
+		publishWithKnownVariant();
+		#else
+		if (onComplete != null)
+			onComplete(false);
 		#end
 	}
 
@@ -570,11 +870,46 @@ class GamePushSampleBackend implements IGame {
 				onComplete(false);
 			return;
 		}
-		untyped __js__("
-			window.gamePushSDK.leaderboard.publishRecord({tag: {0}, record: {1}})
-				.then(function() { if ({2}) {2}(true); })
-				.catch(function() { if ({2}) {2}(false); });
-		", tag, score, onComplete);
+
+		var resolvedTag = normalizeLeaderboardTag(tag);
+
+		var provider = activeSaveProvider();
+		if (provider != null && provider.mode == "cloud" && provider.cloudAvailable) {
+			provider.set("score", score);
+			updateSnapshotSave("score", score);
+
+			provider.sync(function(success:Bool) {
+				if (!success) {
+					untyped __js__("console.warn('Score sync failed, trying direct leaderboard publish')");
+					publishScoreToLeaderboard(resolvedTag, score, function(published:Bool):Void {
+						if (onComplete != null)
+							onComplete(published);
+					});
+					return;
+				}
+
+				if (bootstrapSnapshot != null) {
+					bootstrapSnapshot.saves = provider.snapshot();
+					bootstrapSnapshot.saveInfo = provider.state();
+					if (bootstrapSnapshot.player != null)
+						Reflect.setField(bootstrapSnapshot.player, "score", score);
+				}
+
+				publishScoreToLeaderboard(resolvedTag, score, function(published:Bool):Void {
+					if (!published) {
+						untyped __js__("console.warn('Score synced, but leaderboard publish is unavailable (check leaderboard tag/variant in dashboard).')");
+					}
+					if (onComplete != null)
+						onComplete(true);
+				});
+			});
+			return;
+		}
+
+		publishScoreToLeaderboard(resolvedTag, score, function(published:Bool):Void {
+			if (onComplete != null)
+				onComplete(published);
+		});
 		#else
 		if (onComplete != null)
 			onComplete(false);
@@ -585,6 +920,24 @@ class GamePushSampleBackend implements IGame {
 
 	function jsGetLanguage():String {
 		return currentLanguage;
+	}
+
+	function syncProviderLanguageOnStartup():Void {
+		#if gamepush
+		if (!GAMEPUSH_LANGUAGE_API_CALLS_ENABLED)
+			return;
+		if (!isGamePushAvailable())
+			return;
+
+		try {
+			// Force provider dictionaries refresh for non-English locales.
+			if (currentLanguage != "en")
+				untyped __js__("window.gamePushSDK.changeLanguage('en')");
+			untyped __js__("window.gamePushSDK.changeLanguage({0})", currentLanguage);
+		} catch (e) {
+			trace('[Game] Failed to sync provider language on startup: $e');
+		}
+		#end
 	}
 
 	function jsChangeLanguage(lang:String):Void {
@@ -629,6 +982,8 @@ class GamePushSampleBackend implements IGame {
 			provider.set(resolvedKey, value);
 		}
 		updateSnapshotSave(resolvedKey, value);
+		if (resolvedKey == "score")
+			invalidateLeaderboardCache();
 	}
 
 	function jsSyncSaves(onComplete:Dynamic):Void {
@@ -644,6 +999,8 @@ class GamePushSampleBackend implements IGame {
 				bootstrapSnapshot.saves = provider.snapshot();
 				bootstrapSnapshot.saveInfo = provider.state();
 			}
+			if (success)
+				invalidateLeaderboardCache();
 
 			if (onComplete != null)
 				onComplete(success);
