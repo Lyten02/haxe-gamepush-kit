@@ -5,7 +5,6 @@ import gamepushkit.bootstrap.BootstrapTypes.SaveProviderState;
 
 #if js
 import js.Browser;
-import js.lib.Promise;
 #end
 
 /**
@@ -37,7 +36,13 @@ class SaveProvider {
 		this.localAvailable = true;
 	}
 
-	public static function initialize(playerAvailable:Bool, defaults:Dynamic, fieldNames:Array<String>, onComplete:SaveProvider->Void):Void {
+	public static function initialize(
+		playerAvailable:Bool,
+		usePlayerLoad:Bool,
+		defaults:Dynamic,
+		fieldNames:Array<String>,
+		onComplete:SaveProvider->Void
+	):Void {
 		if (!playerAvailable) {
 			onComplete(createLocalProvider(defaults, fieldNames));
 			return;
@@ -50,23 +55,30 @@ class SaveProvider {
 			return;
 		}
 
-		try {
-			var loadPromise:Dynamic = untyped(player.load != null ? player.load() : Promise.resolve(true));
-			var loadChain:Dynamic = untyped loadPromise.then(function(_):Dynamic {
+			// GamePush docs: cloud fields are available after SDK init.
+			// Optional explicit player.load() can be toggled for stricter refresh.
+			if (!usePlayerLoad || untyped player.load == null) {
 				onComplete(createCloudProvider(player, defaults, fieldNames));
-				return null;
-			});
-
-			var loadCatch:Dynamic = Reflect.field(loadChain, "catch");
-			if (loadCatch != null) {
-				Reflect.callMethod(loadChain, loadCatch, [function(_):Dynamic {
-					onComplete(createLocalProvider(defaults, fieldNames));
-					return null;
-				}]);
+				return;
 			}
-		} catch (e) {
-			onComplete(createLocalProvider(defaults, fieldNames));
-		}
+
+			try {
+				var loadPromise:Dynamic = untyped(player.load());
+				var loadChain:Dynamic = untyped loadPromise.then(function(_):Dynamic {
+					onComplete(createCloudProvider(player, defaults, fieldNames));
+					return null;
+				});
+
+				var loadCatch:Dynamic = Reflect.field(loadChain, "catch");
+				if (loadCatch != null) {
+					Reflect.callMethod(loadChain, loadCatch, [function(_):Dynamic {
+						onComplete(createCloudProvider(player, defaults, fieldNames));
+						return null;
+					}]);
+				}
+			} catch (e) {
+				onComplete(createCloudProvider(player, defaults, fieldNames));
+			}
 		#else
 		onComplete(createLocalProvider(defaults, fieldNames));
 		#end

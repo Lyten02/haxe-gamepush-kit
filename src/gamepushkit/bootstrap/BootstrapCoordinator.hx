@@ -16,6 +16,13 @@ class BootstrapCoordinator {
 	static inline var LEADERBOARD_TAG:String = "main";
 	static inline var LEADERBOARD_LIMIT:Int = 10;
 	static inline var LEADERBOARD_TIMEOUT_MS:Int = 900;
+	// Debug tuning:
+	// - Read player/saves from already initialized SDK state.
+	// - Keep explicit player.load() disabled to avoid extra API call.
+	// - Allow leaderboard warmup call.
+	static inline var GAMEPUSH_PLAYER_SNAPSHOT_ENABLED:Bool = true;
+	static inline var GAMEPUSH_PLAYER_LOAD_ENABLED:Bool = false;
+	static inline var GAMEPUSH_LEADERBOARD_API_CALLS_ENABLED:Bool = true;
 
 	var adManager:AdManager;
 	var saveDefaults:Dynamic;
@@ -37,8 +44,8 @@ class BootstrapCoordinator {
 		emitProgress(onProgress, "detectSdk", "Checking platform capabilities", 10);
 
 		var gamePushAvailable = isGamePushAvailable();
-		var playerAvailable = isPlayerAvailable();
-		var leaderboardAvailable = isLeaderboardAvailable();
+		var playerAvailable = GAMEPUSH_PLAYER_SNAPSHOT_ENABLED && isPlayerAvailable();
+		var leaderboardAvailable = GAMEPUSH_LEADERBOARD_API_CALLS_ENABLED && isLeaderboardAvailable();
 		var warnings:Array<String> = [];
 
 		emitProgress(onProgress, "resolveLanguage", "Resolving language", 25);
@@ -49,7 +56,7 @@ class BootstrapCoordinator {
 		currentLanguage = languageResolution.language;
 
 		emitProgress(onProgress, "prepareSaves", "Preparing save provider", 45);
-		SaveProvider.initialize(playerAvailable, saveDefaults, saveFields, function(provider:SaveProvider) {
+		SaveProvider.initialize(playerAvailable, GAMEPUSH_PLAYER_LOAD_ENABLED, saveDefaults, saveFields, function(provider:SaveProvider) {
 			saveProvider = provider;
 			if (playerAvailable && provider.mode == "local") {
 				warnings.push("Cloud save provider is unavailable, local fallback enabled");

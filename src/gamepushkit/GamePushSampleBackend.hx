@@ -41,6 +41,18 @@ class GamePushSampleBackend implements IGame {
 	static inline var AD_PAUSE_TOKEN:String = "ads-blocking";
 	static inline var PLATFORM_PAUSE_TOKEN:String = "platform-visibility";
 	static final SAVE_FIELDS:Array<String> = ["score"];
+	// Split API switches:
+	// - Data API (player/login/provider writes)
+	// - Leaderboard API (open/fetch/submit from UI sample)
+	// - Ads API (show/close/refresh ads)
+	// - Lifecycle API (gameStart/gameplayStart/pause/resume)
+	// - Sounds API (sounds.mute/unmute)
+	static inline var GAMEPUSH_DATA_API_CALLS_ENABLED:Bool = false;
+	static inline var GAMEPUSH_LEADERBOARD_API_CALLS_ENABLED:Bool = true;
+	static inline var GAMEPUSH_LANGUAGE_API_CALLS_ENABLED:Bool = true;
+	static inline var GAMEPUSH_AD_API_CALLS_ENABLED:Bool = true;
+	static inline var GAMEPUSH_LIFECYCLE_API_CALLS_ENABLED:Bool = true;
+	static inline var GAMEPUSH_SOUNDS_API_CALLS_ENABLED:Bool = true;
 
 	public function new(?samples:Array<Dynamic>) {
 		this.samples = samples != null ? samples : defaultSamples();
@@ -93,6 +105,8 @@ class GamePushSampleBackend implements IGame {
 
 	function isPlayerAvailable():Bool {
 		#if js
+		if (!GAMEPUSH_DATA_API_CALLS_ENABLED)
+			return false;
 		return untyped __js__("typeof window !== 'undefined' && !!(window.gamePushSDK && window.gamePushSDK.player)");
 		#else
 		return false;
@@ -101,6 +115,8 @@ class GamePushSampleBackend implements IGame {
 
 	function isLeaderboardAvailable():Bool {
 		#if js
+		if (!GAMEPUSH_LEADERBOARD_API_CALLS_ENABLED)
+			return false;
 		return untyped __js__("typeof window !== 'undefined' && !!(window.gamePushSDK && window.gamePushSDK.leaderboard)");
 		#else
 		return false;
@@ -109,6 +125,8 @@ class GamePushSampleBackend implements IGame {
 
 	#if gamepush
 	function startGamePushLifecycle():Void {
+		if (!GAMEPUSH_LIFECYCLE_API_CALLS_ENABLED)
+			return;
 		if (!isGamePushAvailable()) {
 			trace("[Game] GamePush SDK not ready at init");
 			return;
@@ -123,6 +141,8 @@ class GamePushSampleBackend implements IGame {
 	}
 
 	function stopGamePushLifecycle():Void {
+		if (!GAMEPUSH_LIFECYCLE_API_CALLS_ENABLED)
+			return;
 		if (!isGamePushAvailable())
 			return;
 
@@ -300,6 +320,12 @@ class GamePushSampleBackend implements IGame {
 	// ========== Ads API ==========
 
 	function withBlockingAd(showAd:(Void->Void)->Void, onComplete:Dynamic, adLabel:String):Void {
+		if (!GAMEPUSH_AD_API_CALLS_ENABLED) {
+			if (onComplete != null)
+				onComplete();
+			return;
+		}
+
 		pushAdAudioMute();
 		pushAdPause();
 
@@ -345,14 +371,20 @@ class GamePushSampleBackend implements IGame {
 	}
 
 	function jsShowSticky():Void {
+		if (!GAMEPUSH_AD_API_CALLS_ENABLED)
+			return;
 		adManager.showSticky();
 	}
 
 	function jsCloseSticky():Void {
+		if (!GAMEPUSH_AD_API_CALLS_ENABLED)
+			return;
 		adManager.closeSticky();
 	}
 
 	function jsRefreshSticky():Void {
+		if (!GAMEPUSH_AD_API_CALLS_ENABLED)
+			return;
 		adManager.refreshSticky();
 	}
 
@@ -410,7 +442,7 @@ class GamePushSampleBackend implements IGame {
 
 	function jsGetPlayerScore():Int {
 		#if gamepush
-		if (isPlayerAvailable()) {
+		if (GAMEPUSH_DATA_API_CALLS_ENABLED && isPlayerAvailable()) {
 			var cloudScore = untyped __js__("window.gamePushSDK.player.get('score')");
 			if (cloudScore != null)
 				return cloudScore;
@@ -436,6 +468,8 @@ class GamePushSampleBackend implements IGame {
 		updateSnapshotSave("score", score);
 
 		#if gamepush
+		if (!GAMEPUSH_DATA_API_CALLS_ENABLED)
+			return;
 		if (!isPlayerAvailable())
 			return;
 		untyped __js__("window.gamePushSDK.player.set('score', {0})", score);
@@ -467,6 +501,11 @@ class GamePushSampleBackend implements IGame {
 
 	function jsPlayerLogin(onSuccess:Dynamic, onError:Dynamic):Void {
 		#if gamepush
+		if (!GAMEPUSH_DATA_API_CALLS_ENABLED) {
+			if (onError != null)
+				onError("GamePush API calls are disabled");
+			return;
+		}
 		if (!isPlayerAvailable()) {
 			if (onError != null)
 				onError("GamePush SDK not ready");
@@ -488,6 +527,8 @@ class GamePushSampleBackend implements IGame {
 
 	function jsOpenLeaderboard(tag:String):Void {
 		#if gamepush
+		if (!GAMEPUSH_LEADERBOARD_API_CALLS_ENABLED)
+			return;
 		if (!isLeaderboardAvailable())
 			return;
 		untyped __js__("window.gamePushSDK.leaderboard.open({tag: {0}})", tag);
@@ -496,6 +537,11 @@ class GamePushSampleBackend implements IGame {
 
 	function jsGetLeaderboardEntries(tag:String, limit:Int, onResult:Dynamic):Void {
 		#if gamepush
+		if (!GAMEPUSH_LEADERBOARD_API_CALLS_ENABLED) {
+			if (onResult != null)
+				onResult([]);
+			return;
+		}
 		if (!isLeaderboardAvailable()) {
 			if (onResult != null)
 				onResult([]);
@@ -514,6 +560,11 @@ class GamePushSampleBackend implements IGame {
 
 	function jsSubmitScore(tag:String, score:Int, onComplete:Dynamic):Void {
 		#if gamepush
+		if (!GAMEPUSH_LEADERBOARD_API_CALLS_ENABLED) {
+			if (onComplete != null)
+				onComplete(false);
+			return;
+		}
 		if (!isLeaderboardAvailable()) {
 			if (onComplete != null)
 				onComplete(false);
@@ -548,7 +599,7 @@ class GamePushSampleBackend implements IGame {
 		}
 
 		#if gamepush
-		if (isGamePushAvailable()) {
+		if (GAMEPUSH_LANGUAGE_API_CALLS_ENABLED && isGamePushAvailable()) {
 			try {
 				untyped __js__("window.gamePushSDK.changeLanguage({0})", currentLanguage);
 			} catch (e) {
@@ -612,11 +663,43 @@ class GamePushSampleBackend implements IGame {
 
 	// ========== Audio API ==========
 
+	function applyGamePushSoundState(shouldMute:Bool):Void {
+		#if gamepush
+		if (!GAMEPUSH_SOUNDS_API_CALLS_ENABLED)
+			return;
+		if (!isGamePushAvailable())
+			return;
+
+		try {
+			if (shouldMute) {
+				untyped __js__("
+					if (window.gamePushSDK && window.gamePushSDK.sounds && window.gamePushSDK.sounds.mute) {
+						if (!window.gamePushSDK.sounds.isMuted) {
+							window.gamePushSDK.sounds.mute();
+						}
+					}
+				");
+			} else {
+				untyped __js__("
+					if (window.gamePushSDK && window.gamePushSDK.sounds && window.gamePushSDK.sounds.unmute) {
+						if (window.gamePushSDK.sounds.isMuted) {
+							window.gamePushSDK.sounds.unmute();
+						}
+					}
+				");
+			}
+		} catch (e) {
+			trace('[Game] Failed to apply GamePush sound state: $e');
+		}
+		#end
+	}
+
 	function applyAudioMuteState():Void {
 		var nextMuted = manualAudioMuted || adAudioMuteDepth > 0 || platformAudioMuted;
 		if (nextMuted == audioMuted)
 			return;
 		audioMuted = nextMuted;
+		applyGamePushSoundState(audioMuted);
 
 		if (audioMuted)
 			Bridge.sendToReact("audioMuted", {});
@@ -647,6 +730,10 @@ class GamePushSampleBackend implements IGame {
 		var shouldPause = adPauseDepth > 0 || platformPaused;
 
 		#if gamepush
+		if (!GAMEPUSH_LIFECYCLE_API_CALLS_ENABLED) {
+			gamePushPauseApplied = shouldPause;
+			return;
+		}
 		if (gamePushPauseApplied == shouldPause)
 			return;
 
