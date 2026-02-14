@@ -6,6 +6,11 @@ import gamepush.AdManager;
 import gamepush.GamePush;
 import gamepushkit.Bridge;
 import gamepushkit.WebFocusLifecycle;
+import gamepushkit.bootstrap.BootstrapCoordinator;
+import gamepushkit.bootstrap.BootstrapTypes.BootstrapProgress;
+import gamepushkit.bootstrap.BootstrapTypes.BootstrapSnapshot;
+import gamepushkit.bootstrap.LanguageResolver;
+import gamepushkit.bootstrap.SaveProvider;
 
 /**
  * GamePush Samples - Backend API.
@@ -28,46 +33,81 @@ class GamePushSampleBackend implements IGame {
 	var platformAudioMuted:Bool = false;
 	var gamePushPauseApplied:Bool = false;
 	var webFocusLifecycle:Null<WebFocusLifecycle> = null;
+	var bootstrapCoordinator:Null<BootstrapCoordinator> = null;
+	var bootstrapSnapshot:BootstrapSnapshot;
+	var saveProvider:Null<SaveProvider> = null;
+	var currentLanguage:String = "en";
+
 	static inline var AD_PAUSE_TOKEN:String = "ads-blocking";
 	static inline var PLATFORM_PAUSE_TOKEN:String = "platform-visibility";
+	static final SAVE_FIELDS:Array<String> = ["score"];
 
 	public function new(?samples:Array<Dynamic>) {
 		this.samples = samples != null ? samples : defaultSamples();
+		bootstrapSnapshot = defaultBootstrapSnapshot();
 	}
 
 	public function init(app:hxd.App):Void {
 		this.app = app;
 		appBase = Std.isOfType(app, AppBase) ? cast app : null;
 
-		// Initialize managers
+		// Managers are created first; full readiness is published after bootstrap sequence.
 		adManager = new AdManager();
-		// Yandex Games 1.19: lifecycle is started when game session is actually ready for interaction.
-		startGamePushLifecycle();
 
-		// Export API to window for React
+		// Export API early, then block menu visibility in React until gdsite:ready arrives.
 		exportAPI();
 		initWebFocusLifecycle();
+		runBootstrapSequence();
+	}
 
-		// Notify React that Haxe backend is ready
-		Bridge.sendToReact("ready", {
-			version: "1.0.0",
-			samples: getSamplesList()
+	function runBootstrapSequence():Void {
+		bootstrapCoordinator = new BootstrapCoordinator(adManager, defaultSaveValues(), SAVE_FIELDS);
+		bootstrapSnapshot = bootstrapCoordinator.getSnapshot();
+		currentLanguage = bootstrapSnapshot.language;
+
+		bootstrapCoordinator.run(function(progress:BootstrapProgress) {
+			Bridge.sendToReact("bootstrapProgress", progress);
+		}, function(snapshot:BootstrapSnapshot) {
+			bootstrapSnapshot = snapshot;
+			saveProvider = bootstrapCoordinator != null ? bootstrapCoordinator.saveProvider : null;
+			currentLanguage = snapshot.language;
+
+			// Yandex Games 1.19: lifecycle starts only when session is genuinely ready for interaction.
+			startGamePushLifecycle();
+
+			Bridge.sendToReact("ready", {
+				version: "1.0.0",
+				samples: getSamplesList(),
+				bootstrap: snapshot
+			});
 		});
 	}
 
-	#if gamepush
 	function isGamePushAvailable():Bool {
+		#if js
 		return untyped __js__("typeof window !== 'undefined' && !!window.gamePushSDK");
+		#else
+		return false;
+		#end
 	}
 
 	function isPlayerAvailable():Bool {
+		#if js
 		return untyped __js__("typeof window !== 'undefined' && !!(window.gamePushSDK && window.gamePushSDK.player)");
+		#else
+		return false;
+		#end
 	}
 
 	function isLeaderboardAvailable():Bool {
+		#if js
 		return untyped __js__("typeof window !== 'undefined' && !!(window.gamePushSDK && window.gamePushSDK.leaderboard)");
+		#else
+		return false;
+		#end
 	}
 
+	#if gamepush
 	function startGamePushLifecycle():Void {
 		if (!isGamePushAvailable()) {
 			trace("[Game] GamePush SDK not ready at init");
@@ -75,7 +115,6 @@ class GamePushSampleBackend implements IGame {
 		}
 
 		try {
-			// Yandex Games 1.19 (Game Ready / gameplay): session starts only when game can be interacted with.
 			GamePush.gameStart();
 			GamePush.gameplayStart();
 		} catch (e) {
@@ -110,7 +149,6 @@ class GamePushSampleBackend implements IGame {
 		if (platformPaused == interrupted && platformAudioMuted == interrupted)
 			return;
 
-		// Yandex Games 1.3 allows up to 2s delay, but we pause immediately on focus loss.
 		platformPaused = interrupted;
 		platformAudioMuted = interrupted;
 
@@ -126,7 +164,6 @@ class GamePushSampleBackend implements IGame {
 	function exportAPI():Void {
 		#if js
 		var api = {
-			// Ads API
 			ads: {
 				showPreloader: jsShowPreloader,
 				showFullscreen: jsShowFullscreen,
@@ -141,8 +178,6 @@ class GamePushSampleBackend implements IGame {
 				refreshOverlayAutoShift: jsRefreshOverlayAutoShift,
 				getOverlayInsets: jsGetOverlayInsets
 			},
-
-			// Player API
 			player: {
 				getId: jsGetPlayerId,
 				getName: jsGetPlayerName,
@@ -152,35 +187,29 @@ class GamePushSampleBackend implements IGame {
 				isLoggedIn: jsIsPlayerLoggedIn,
 				login: jsPlayerLogin
 			},
-
-			// Leaderboard API
 			leaderboard: {
 				open: jsOpenLeaderboard,
 				getEntries: jsGetLeaderboardEntries,
 				submitScore: jsSubmitScore
 			},
-
-			// Language API
 			language: {
 				getCurrent: jsGetLanguage,
 				change: jsChangeLanguage
 			},
-
-			// Saves API
 			saves: {
 				get: jsGetSave,
 				set: jsSetSave,
 				sync: jsSyncSaves
 			},
-
-			// Audio API
 			audio: {
 				mute: jsMuteAudio,
 				unmute: jsUnmuteAudio,
 				isMuted: jsIsAudioMuted
 			},
-
-			// Utility
+			bootstrap: {
+				getSnapshot: jsGetBootstrapSnapshot,
+				getLeaderboardWarmup: jsGetBootstrapLeaderboardWarmup
+			},
 			getSamplesList: function() {
 				return getSamplesList();
 			}
@@ -204,8 +233,68 @@ class GamePushSampleBackend implements IGame {
 		];
 	}
 
+	function defaultSaveValues():Dynamic {
+		return {
+			score: 0
+		};
+	}
+
+	function defaultBootstrapSnapshot():BootstrapSnapshot {
+		return {
+			completed: false,
+			gamePushAvailable: false,
+			playerAvailable: false,
+			leaderboardAvailable: false,
+			fallbackToLocal: true,
+			language: "en",
+			languageSource: "default",
+			saveProvider: "local",
+			saveInfo: {
+				mode: "local",
+				cloudAvailable: false,
+				localAvailable: true,
+				cloudHadData: false
+			},
+			saves: defaultSaveValues(),
+			player: null,
+			adsStatus: null,
+			leaderboardWarmup: null,
+			warnings: [],
+			startedAt: Date.now().getTime(),
+			finishedAt: 0
+		};
+	}
+
 	function getSamplesList():Array<Dynamic> {
 		return samples;
+	}
+
+	function resolveSaveKey(key:String):String {
+		return key == "testKey" ? "score" : key;
+	}
+
+	function updateSnapshotSave(key:String, value:Dynamic):Void {
+		if (bootstrapSnapshot == null)
+			return;
+		if (bootstrapSnapshot.saves == null)
+			bootstrapSnapshot.saves = {};
+		Reflect.setField(bootstrapSnapshot.saves, key, value);
+	}
+
+	function getSaveValueFromSnapshot(key:String):Dynamic {
+		if (bootstrapSnapshot == null || bootstrapSnapshot.saves == null)
+			return null;
+		return Reflect.field(bootstrapSnapshot.saves, key);
+	}
+
+	function activeSaveProvider():Null<SaveProvider> {
+		if (saveProvider != null)
+			return saveProvider;
+		if (bootstrapCoordinator != null && bootstrapCoordinator.saveProvider != null) {
+			saveProvider = bootstrapCoordinator.saveProvider;
+			return saveProvider;
+		}
+		return null;
 	}
 
 	// ========== Ads API ==========
@@ -272,7 +361,11 @@ class GamePushSampleBackend implements IGame {
 	}
 
 	function jsGetAdsStatus():Dynamic {
-		return adManager.getStatus();
+		var status = adManager.getStatus();
+		if (bootstrapSnapshot != null) {
+			bootstrapSnapshot.adsStatus = status;
+		}
+		return status;
 	}
 
 	function jsEnableOverlayAutoShift(options:Dynamic):Void {
@@ -295,35 +388,53 @@ class GamePushSampleBackend implements IGame {
 
 	function jsGetPlayerId():String {
 		#if gamepush
-		if (!isPlayerAvailable())
-			return "";
-		return untyped __js__("window.gamePushSDK.player.id") ?? "";
-		#else
-		return "player_123";
+		if (isPlayerAvailable())
+			return untyped __js__("window.gamePushSDK.player.id") ?? "";
 		#end
+		if (bootstrapSnapshot != null && bootstrapSnapshot.player != null) {
+			return Reflect.field(bootstrapSnapshot.player, "id") ?? "";
+		}
+		return "";
 	}
 
 	function jsGetPlayerName():String {
 		#if gamepush
-		if (!isPlayerAvailable())
-			return "Guest";
-		return untyped __js__("window.gamePushSDK.player.name") ?? "Guest";
-		#else
-		return "Test Player";
+		if (isPlayerAvailable())
+			return untyped __js__("window.gamePushSDK.player.name") ?? "Guest";
 		#end
+		if (bootstrapSnapshot != null && bootstrapSnapshot.player != null) {
+			return Reflect.field(bootstrapSnapshot.player, "name") ?? "Guest";
+		}
+		return "Guest";
 	}
 
 	function jsGetPlayerScore():Int {
 		#if gamepush
-		if (!isPlayerAvailable())
-			return 0;
-		return untyped __js__("window.gamePushSDK.player.score") ?? 0;
-		#else
-		return 1000;
+		if (isPlayerAvailable()) {
+			var cloudScore = untyped __js__("window.gamePushSDK.player.get('score')");
+			if (cloudScore != null)
+				return cloudScore;
+		}
 		#end
+
+		var provider = activeSaveProvider();
+		if (provider != null) {
+			var value = provider.get("score");
+			if (value != null)
+				return value;
+		}
+
+		var fallback = getSaveValueFromSnapshot("score");
+		return fallback != null ? fallback : 0;
 	}
 
 	function jsSetPlayerScore(score:Int):Void {
+		var provider = activeSaveProvider();
+		if (provider != null) {
+			provider.set("score", score);
+		}
+		updateSnapshotSave("score", score);
+
 		#if gamepush
 		if (!isPlayerAvailable())
 			return;
@@ -333,22 +444,25 @@ class GamePushSampleBackend implements IGame {
 
 	function jsGetPlayerAvatar():String {
 		#if gamepush
-		if (!isPlayerAvailable())
-			return "";
-		return untyped __js__("window.gamePushSDK.player.avatar") ?? "";
-		#else
-		return "";
+		if (isPlayerAvailable())
+			return untyped __js__("window.gamePushSDK.player.avatar") ?? "";
 		#end
+		if (bootstrapSnapshot != null && bootstrapSnapshot.player != null) {
+			return Reflect.field(bootstrapSnapshot.player, "avatar") ?? "";
+		}
+		return "";
 	}
 
 	function jsIsPlayerLoggedIn():Bool {
 		#if gamepush
-		if (!isPlayerAvailable())
-			return false;
-		return untyped __js__("window.gamePushSDK.player.isLoggedIn") ?? false;
-		#else
-		return true;
+		if (isPlayerAvailable())
+			return untyped __js__("window.gamePushSDK.player.isLoggedIn") ?? false;
 		#end
+		if (bootstrapSnapshot != null && bootstrapSnapshot.player != null) {
+			var value = Reflect.field(bootstrapSnapshot.player, "isLoggedIn");
+			return value == true;
+		}
+		return false;
 	}
 
 	function jsPlayerLogin(onSuccess:Dynamic, onError:Dynamic):Void {
@@ -365,8 +479,8 @@ class GamePushSampleBackend implements IGame {
 				.catch(function(err) { if ({1}) {1}(err); });
 		", onSuccess, onError);
 		#else
-		if (onSuccess != null)
-			onSuccess();
+		if (onError != null)
+			onError("Player login unavailable in non-GamePush build");
 		#end
 	}
 
@@ -390,15 +504,11 @@ class GamePushSampleBackend implements IGame {
 		untyped __js__("
 			window.gamePushSDK.leaderboard.fetch({tag: {0}, limit: {1}})
 				.then(function(result) { if ({2}) {2}(result.players); })
-				.catch(function(err) { console.error('Leaderboard fetch error:', err); });
+				.catch(function(err) { console.error('Leaderboard fetch error:', err); if ({2}) {2}([]); });
 		", tag, limit, onResult);
 		#else
 		if (onResult != null)
-			onResult([
-				{name: "Player 1", score: 5000},
-				{name: "Player 2", score: 4000},
-				{name: "Player 3", score: 3000}
-			]);
+			onResult([]);
 		#end
 	}
 
@@ -416,81 +526,93 @@ class GamePushSampleBackend implements IGame {
 		", tag, score, onComplete);
 		#else
 		if (onComplete != null)
-			onComplete(true);
+			onComplete(false);
 		#end
 	}
 
 	// ========== Language API ==========
 
 	function jsGetLanguage():String {
-		#if gamepush
-		if (!isGamePushAvailable())
-			return "en";
-		return untyped __js__("window.gamePushSDK.language") ?? "en";
-		#else
-		return "en";
-		#end
+		return currentLanguage;
 	}
 
 	function jsChangeLanguage(lang:String):Void {
+		var normalized = bootstrapCoordinator != null
+			? bootstrapCoordinator.applyManualLanguage(lang)
+			: LanguageResolver.normalize(lang);
+		currentLanguage = normalized;
+
+		if (bootstrapSnapshot != null) {
+			bootstrapSnapshot.language = currentLanguage;
+			bootstrapSnapshot.languageSource = "manual";
+		}
+
 		#if gamepush
-		if (isGamePushAvailable())
-			untyped __js__("window.gamePushSDK.changeLanguage({0})", lang);
+		if (isGamePushAvailable()) {
+			try {
+				untyped __js__("window.gamePushSDK.changeLanguage({0})", currentLanguage);
+			} catch (e) {
+				trace('[Game] Failed to change provider language: $e');
+			}
+		}
 		#end
-		Bridge.sendToReact("languageChanged", {language: lang});
+
+		Bridge.sendToReact("languageChanged", {language: currentLanguage});
 	}
 
 	// ========== Saves API ==========
 
-	function resolveSaveKey(key:String):String {
-		// Keep backward compatibility for the sample button "testKey".
-		// We map it to "score" because this field exists in Player sample.
-		return key == "testKey" ? "score" : key;
-	}
-
 	function jsGetSave(key:String):Dynamic {
-		#if gamepush
-		if (!isPlayerAvailable())
-			return null;
 		var resolvedKey = resolveSaveKey(key);
-		return untyped __js__("window.gamePushSDK.player.get({0})", resolvedKey);
-		#else
-		return null;
-		#end
+		var provider = activeSaveProvider();
+		if (provider != null) {
+			return provider.get(resolvedKey);
+		}
+		return getSaveValueFromSnapshot(resolvedKey);
 	}
 
 	function jsSetSave(key:String, value:Dynamic):Void {
-		#if gamepush
-		if (!isPlayerAvailable())
-			return;
 		var resolvedKey = resolveSaveKey(key);
-		untyped __js__("window.gamePushSDK.player.set({0}, {1})", resolvedKey, value);
-		#end
+		var provider = activeSaveProvider();
+		if (provider != null) {
+			provider.set(resolvedKey, value);
+		}
+		updateSnapshotSave(resolvedKey, value);
 	}
 
 	function jsSyncSaves(onComplete:Dynamic):Void {
-		#if gamepush
-		if (!isPlayerAvailable()) {
+		var provider = activeSaveProvider();
+		if (provider == null) {
 			if (onComplete != null)
 				onComplete(false);
 			return;
 		}
-		untyped __js__("
-			window.gamePushSDK.player.sync()
-				.then(function() { if ({0}) {0}(true); })
-				.catch(function() { if ({0}) {0}(false); });
-		", onComplete);
-		#else
-		if (onComplete != null)
-			onComplete(true);
-		#end
+
+		provider.sync(function(success:Bool) {
+			if (bootstrapSnapshot != null) {
+				bootstrapSnapshot.saves = provider.snapshot();
+				bootstrapSnapshot.saveInfo = provider.state();
+			}
+
+			if (onComplete != null)
+				onComplete(success);
+		});
+	}
+
+	function jsGetBootstrapSnapshot():Dynamic {
+		return bootstrapSnapshot;
+	}
+
+	function jsGetBootstrapLeaderboardWarmup():Dynamic {
+		if (bootstrapCoordinator != null) {
+			return bootstrapCoordinator.getLeaderboardWarmup();
+		}
+		return bootstrapSnapshot != null ? bootstrapSnapshot.leaderboardWarmup : null;
 	}
 
 	// ========== Audio API ==========
 
 	function applyAudioMuteState():Void {
-		// Yandex Games 1.3: stop audio when focus leaves the game (tab/app hidden).
-		// The final mute state is merged from all interruption reasons.
 		var nextMuted = manualAudioMuted || adAudioMuteDepth > 0 || platformAudioMuted;
 		if (nextMuted == audioMuted)
 			return;
@@ -524,7 +646,6 @@ class GamePushSampleBackend implements IGame {
 	function applyGamePushPauseState():Void {
 		var shouldPause = adPauseDepth > 0 || platformPaused;
 
-		// Yandex Games 1.19: gameplay markup should switch with real gameplay pause/resume.
 		#if gamepush
 		if (gamePushPauseApplied == shouldPause)
 			return;
@@ -602,6 +723,8 @@ class GamePushSampleBackend implements IGame {
 		applyAudioMuteState();
 
 		stopGamePushLifecycle();
+		bootstrapCoordinator = null;
+		saveProvider = null;
 		adManager = null;
 	}
 }
