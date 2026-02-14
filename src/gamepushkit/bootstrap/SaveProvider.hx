@@ -124,7 +124,7 @@ class SaveProvider {
 
 			var syncPromise:Dynamic = untyped player.sync();
 			var syncChain:Dynamic = untyped syncPromise.then(function(success:Dynamic):Dynamic {
-				var isSuccess = success == true;
+				var isSuccess = resolveSyncResult(success);
 				if (isSuccess) {
 					persistLocalSnapshot();
 				}
@@ -145,6 +145,35 @@ class SaveProvider {
 		#else
 		onComplete(false);
 		#end
+	}
+
+	function resolveSyncResult(result:Dynamic):Bool {
+		// GamePush SDK responses are not stable across versions:
+		// success can be `true`, an object, or even undefined.
+		if (result == null) {
+			return true;
+		}
+
+		if (Std.isOfType(result, Bool)) {
+			return cast result;
+		}
+
+		var successField = Reflect.field(result, "success");
+		if (successField != null) {
+			return successField == true;
+		}
+
+		var okField = Reflect.field(result, "ok");
+		if (okField != null) {
+			return okField == true;
+		}
+
+		var errorField = Reflect.field(result, "error");
+		if (errorField != null) {
+			return false;
+		}
+
+		return true;
 	}
 
 	function rememberKey(key:String):Void {
