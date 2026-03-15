@@ -52,8 +52,7 @@ class BootstrapCoordinator {
 
 		emitProgress(onProgress, "resolveLanguage", "Resolving language", 25);
 		var languageResolution = LanguageResolver.resolve(
-			gamePushAvailable ? getProviderLanguage() : null,
-			LanguageResolver.getSystemLanguage()
+			gamePushAvailable ? getProviderLanguage() : null
 		);
 		currentLanguage = languageResolution.language;
 

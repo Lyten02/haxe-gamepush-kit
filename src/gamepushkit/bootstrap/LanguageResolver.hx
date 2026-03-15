@@ -1,8 +1,5 @@
 package gamepushkit.bootstrap;
 
-#if js
-import js.Browser;
-#end
 import gamepushkit.bootstrap.BootstrapTypes.LanguageResolution;
 
 /**
@@ -12,22 +9,14 @@ class LanguageResolver {
 	static final SUPPORTED:Array<String> = ["en", "ru", "tr"];
 
 	/**
-	 * Resolve startup language with priority: provider -> system -> default(en).
+	 * Resolve startup language: provider (GamePush SDK) -> default(en).
 	 */
-	public static function resolve(providerLanguage:Null<String>, systemLanguage:Null<String>):LanguageResolution {
+	public static function resolve(providerLanguage:Null<String>):LanguageResolution {
 		var fromProvider = pickSupported(providerLanguage);
 		if (fromProvider != null) {
 			return {
 				language: fromProvider,
 				source: "gamepush"
-			};
-		}
-
-		var fromSystem = pickSupported(systemLanguage);
-		if (fromSystem != null) {
-			return {
-				language: fromSystem,
-				source: "system"
 			};
 		}
 
@@ -43,14 +32,6 @@ class LanguageResolver {
 	 */
 	public static function normalize(requestedLanguage:String):String {
 		return pickSupported(requestedLanguage, "en");
-	}
-
-	public static function getSystemLanguage():Null<String> {
-		#if js
-		return Browser.navigator != null ? Browser.navigator.language : null;
-		#else
-		return null;
-		#end
 	}
 
 	static function pickSupported(candidate:Null<String>, ?fallback:Null<String>):Null<String> {
